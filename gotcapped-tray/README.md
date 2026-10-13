@@ -26,6 +26,7 @@ docs/        SIGNING.md, SERVER_TODO.md
 ## What is sent (only if you opt in)
 Per reset window: plan, vendor, window kind, reset time (15-min rounded), bar % + source, token counts per model,
 a one-way HMAC of the account ID (never the ID itself) and one-way hashes of request IDs (dedupe).
+The on-device HMAC uses a public pepper so the same account matches across devices. It is recomputable by anyone who already knows the raw id. The server must re-hash it with a secret before storage. That step is not in this app, it is not deployed from this repo, and it adds nothing to the upload. See [docs/INGEST_REKEY.md](docs/INGEST_REKEY.md).
 **Never:** prompts, replies, code, file or project names, session IDs, emails, raw account IDs, login tokens.
 `test/engine.test.mjs` fails the build if any canary from the fixture logs reaches the payload.
 

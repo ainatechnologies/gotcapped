@@ -52,6 +52,7 @@ export function buildReading(o: { vendor: "claude" | "codex"; plan: string; seat
     bar: { pct: Math.round(bar.pct * 10) / 10, read_at: new Date(Math.floor(bar.t / 6e4) * 6e4).toISOString(), source: bar.source },
     data_start: q15(start), data_end: new Date(Math.floor(end / 6e4) * 6e4).toISOString(),
     attribution: inferred ? "inferred" : "observed", ambiguous_share: Math.round((amb / Math.max(1, amb + tokens)) * 1000) / 1000,
+    // Public-pepper correlation tokens, not the server-stored form. Ingest re-keys them; do not hash them again here.
     usage, req: [...new Set(mine.map((e) => e.req))].sort(),
   };
   const usd = priceUsage(usage).usd;

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "child_process";
+import { createHmac } from "crypto";
 import { readFileSync, writeFileSync } from "fs";
 const H = "/tmp/gc-tray-test-home";
 const run = (...a) => JSON.parse(execFileSync("node", ["engine/dist/engine.cjs", ...a], { env: { ...process.env, HOME: H, GOTCAPPED_NO_RPC: "1", CLAUDE_CONFIG_DIR: "" } }).toString());
@@ -22,6 +23,19 @@ test("payload keys are exactly the ingest allow-list", () => {
   assert.deepEqual(Object.keys(p).sort(), ["client", "device", "proof", "readings", "v"]); assert.match(p.proof, /^[0-9a-f]{64}$/);
   const ok = new Set(["vendor", "plan", "account", "seat", "kind", "reset_at", "bar", "data_start", "data_end", "attribution", "ambiguous_share", "usage", "req"]);
   for (const r of p.readings) for (const k of Object.keys(r)) assert.ok(ok.has(k), k);
+});
+test("upload still uses the public-pepper correlation hashes, with no re-key field", () => {
+  const hmac = (s, n) => createHmac("sha256", "gotcapped-pepper-v1").update(s).digest("hex").slice(0, n);
+  const p = run("scan").payload;
+  assert.equal(p.v, 1);
+  const claude = p.readings.find((r) => r.vendor === "claude");
+  const codex = p.readings.find((r) => r.vendor === "codex");
+  assert.equal(claude.account, hmac("acct:claude:fixture-uuid-A:fixture-org-A", 32));
+  assert.equal(codex.account, hmac("acct:codex:fixture-codex-acct:", 32));
+  for (const r of p.readings) { assert.equal("hk" in r, false); for (const req of r.req) assert.match(req, /^[0-9a-f]{16}$/); }
+  const bin = readFileSync("engine/dist/engine.cjs", "utf8");
+  assert.equal(bin.includes("gotcapped-ingest-acct-v1"), false);
+  assert.equal(bin.includes("GOTCAPPED_INGEST_SECRET"), false);
 });
 test("account switch: a second Claude account gets its own reading, never the first account's tokens", () => {
   const before = run("scan").readings.find((x) => x.vendor === "claude" && x.kind === "weekly");
