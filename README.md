@@ -5,7 +5,7 @@
 - **Menu bar app** (macOS first; Windows and Linux to follow). Results appear right after the first history scan.
 - **CLI:** `npx gotcapped`
 
-Supports Claude Code, Codex and more. See [www.gotcapped.com](https://www.gotcapped.com) for the public board.
+Supports Claude Code and Codex. See [www.gotcapped.com](https://www.gotcapped.com) for the public board.
 
 ## Numbers only, never prompts
 Only token counts, model names, cache hits and timestamps leave your machine. Prompts, outputs, file paths, session IDs and emails never do. A privacy allow-list test (`gotcapped-cli/test`, `gotcapped-tray/test`) fails the build if anything outside the allow-list reaches the upload payload. You can delete your data from the app or the CLI at any time.
