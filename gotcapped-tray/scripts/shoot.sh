@@ -11,7 +11,7 @@ sleep ${WAIT:-7}
 python3 - "$2" <<'PY'
 import sys,subprocess
 from PIL import ImageGrab
-wid=subprocess.check_output(["xdotool","search","--name","Got Capped"]).split()[-1].decode()
+wid=subprocess.check_output(["xdotool","search","--name","Capped"]).split()[-1].decode()
 g=dict(l.split("=") for l in subprocess.check_output(["xdotool","getwindowgeometry","--shell",wid]).decode().split())
 x,y,w,h=int(g["X"]),int(g["Y"]),int(g["WIDTH"]),int(g["HEIGHT"])
 ImageGrab.grab(bbox=(x,y,x+w,y+h),xdisplay=":77").save(sys.argv[1])

@@ -6,6 +6,7 @@ import { join } from "path";
 import { spawn } from "child_process";
 import { accountKey, reqHash, readJson, userHome, walk, toMs } from "./util";
 import type { Entry, Bar, AccountInfo } from "./claude";
+import { scanIncremental, cachePath } from "./incr";
 
 export const codexHome = () => process.env.CODEX_HOME || join(userHome(), ".codex");
 const PLAN: Record<string, string> = { plus: "chatgpt-plus", pro: "chatgpt-pro-200" };
@@ -32,40 +33,46 @@ export function barsFromRateLimits(rl: any, t: number, account: string | null, d
 }
 
 const n = (v: any) => (typeof v === "number" && isFinite(v) && v > 0 ? v : 0);
+type RState = { model: string; session: string; prevTotal: number; i: number };
+type REntry = Entry | (Omit<Bar, "account" | "dir"> & { bar: 1 });
+// One rollout line → entries / bar readings. State carries model, session id and the running total across lines.
+export function rolloutLine(line: string, st: RState, entries: Entry[], bars: Omit<Bar, "account" | "dir">[]) {
+  if (!line) return;
+  let d: any; try { d = JSON.parse(line); } catch { return; }
+  const p = d?.payload; if (!p) return;
+  if (d.type === "session_meta" && p.id) st.session = String(p.id);
+  if (d.type === "turn_context" && typeof p.model === "string") st.model = p.model;
+  if (d.type !== "event_msg" || p.type !== "token_count") return;
+  const t = toMs(d.timestamp); if (!t) return;
+  if (p.rate_limits) for (const b of barsFromRateLimits(p.rate_limits, t, null, "", "rollout")) bars.push(b);
+  const info = p.info; if (!info) return;
+  // Prefer the change in total_token_usage (robust to repeated events); fall back to last_token_usage.
+  const tot = info.total_token_usage, last = info.last_token_usage;
+  const totalNow = n(tot?.total_tokens);
+  if (totalNow) { if (totalNow === st.prevTotal) return; st.prevTotal = totalNow; }
+  const u = last; if (!u) return;
+  const cached = n(u.cached_input_tokens), inp = Math.max(0, n(u.input_tokens) - cached);
+  const e = { t, m: st.model || "gpt-5-codex", in: inp, out: n(u.output_tokens), cr: cached, cw: n(u.cache_write_input_tokens), cw1h: 0, req: reqHash("codex", `${st.session}:${totalNow || "i" + st.i++}:${t}`) };
+  if (e.in + e.out + e.cr + e.cw > 0) entries.push(e);
+}
 export function parseRollout(txt: string, file = ""): { entries: Entry[]; bars: Omit<Bar, "account" | "dir">[] } {
-  const entries: Entry[] = [], bars: Omit<Bar, "account" | "dir">[] = [];
-  let model = "", session = file, prevTotal = -1, i = 0;
-  for (const line of txt.split("\n")) {
-    if (!line) continue;
-    let d: any; try { d = JSON.parse(line); } catch { continue; }
-    const p = d?.payload; if (!p) continue;
-    if (d.type === "session_meta" && p.id) session = String(p.id);
-    if (d.type === "turn_context" && typeof p.model === "string") model = p.model;
-    if (d.type !== "event_msg" || p.type !== "token_count") continue;
-    const t = toMs(d.timestamp); if (!t) continue;
-    if (p.rate_limits) for (const b of barsFromRateLimits(p.rate_limits, t, null, "", "rollout")) bars.push(b);
-    const info = p.info; if (!info) continue;
-    // Prefer the change in total_token_usage (robust to repeated events); fall back to last_token_usage.
-    const tot = info.total_token_usage, last = info.last_token_usage;
-    const totalNow = n(tot?.total_tokens);
-    if (totalNow) { if (totalNow === prevTotal) continue; prevTotal = totalNow; }
-    const u = last; if (!u) continue;
-    const cached = n(u.cached_input_tokens), inp = Math.max(0, n(u.input_tokens) - cached);
-    const e = { t, m: model || "gpt-5-codex", in: inp, out: n(u.output_tokens), cr: cached, cw: n(u.cache_write_input_tokens), cw1h: 0, req: reqHash("codex", `${session}:${totalNow || "i" + i++}:${t}`) };
-    if (e.in + e.out + e.cr + e.cw > 0) entries.push(e);
-  }
+  const entries: Entry[] = [], bars: Omit<Bar, "account" | "dir">[] = [], st: RState = { model: "", session: file, prevTotal: -1, i: 0 };
+  for (const line of txt.split("\n")) rolloutLine(line, st, entries, bars);
   return { entries, bars };
 }
-export function scanCodex(dir: string, since: number) {
-  const seen = new Set<string>(), entries: Entry[] = [], bars: Omit<Bar, "account" | "dir">[] = [];
+// Streams only rollouts modified since `since`, newest first; byte-level prefilter skips message content lines.
+export function scanCodex(dir: string, since: number, opt: { cache?: boolean; save?: boolean; budgetMs?: number } = {}) {
   const files = [...walk(join(dir, "sessions"), /^rollout-.*\.jsonl$/), ...walk(join(dir, "archived_sessions"), /^rollout-.*\.jsonl$/)];
-  for (const f of files) {
-    let txt; try { txt = readFileSync(f, "utf8"); } catch { continue; }
-    const r = parseRollout(txt, f);
-    for (const e of r.entries) if (e.t >= since && !seen.has(e.req)) { seen.add(e.req); entries.push(e); }
-    bars.push(...r.bars.filter((b) => b.t >= since));
+  const r = scanIncremental<REntry, RState>({ files, since, cacheFile: opt.cache === false ? null : cachePath("codex", dir), save: opt.save, budgetMs: opt.budgetMs,
+    marks: ['"token_count"', '"turn_context"', '"session_meta"'], fresh: (f) => ({ model: "", session: f, prevTotal: -1, i: 0 }),
+    parse: (l, st, out) => { const es: Entry[] = [], bs: Omit<Bar, "account" | "dir">[] = []; rolloutLine(l, st, es, bs); out.push(...es, ...bs.map((b) => ({ ...b, bar: 1 as const }))); } });
+  const seen = new Set<string>(), entries: Entry[] = [], bars: Omit<Bar, "account" | "dir">[] = [];
+  for (const x of r.entries) {
+    if (x.t < since) continue;
+    if ("bar" in x) { const { bar, ...b } = x; bars.push(b); continue; }
+    const e = x as Entry; if (!seen.has(e.req)) { seen.add(e.req); entries.push(e); }
   }
-  return { entries: entries.sort((a, b) => a.t - b.t), bars };
+  return { entries: entries.sort((a, b) => a.t - b.t), bars, complete: r.complete };
 }
 
 // Ask the local Codex app-server for the current account's rate limits. No network calls from us; Codex does its own.

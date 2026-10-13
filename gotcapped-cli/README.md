@@ -10,7 +10,7 @@ If you opt in, it shares *only those numbers* with [gotcapped.com](https://www.g
 
 ```sh
 npx gotcapped            # measure, show exactly what would be sent, ask before sending
-npx gotcapped --dry-run  # measure and preview only, never sends
+npx gotcapped --dry-run  # measure only, never sends
 ```
 
 Node 18+. macOS, Linux and Windows. No dependencies.
@@ -27,7 +27,7 @@ Cursor, Gemini CLI and a tray app are next. See the spec in the repo.
 ## Commands
 
 ```
-npx gotcapped                 measure + preview + confirm
+npx gotcapped                 measure + send
 npx gotcapped --watch         re-send hourly (asks once; --yes to skip the question)
 npx gotcapped install-hook    add the Claude Code status-line hook (automatic bar %)
 npx gotcapped pause           stop automatic sending
@@ -39,14 +39,14 @@ For the hook, install globally first so the status line doesn't go through npx e
 
 ## Privacy
 
-**Nothing leaves your machine unless you say yes.** Every run prints the exact JSON first, and the full payload is saved to `~/.gotcapped/outbox/last.json` so you can check it.
+**Running it means you agree to what it sends** (listed below and at https://www.gotcapped.com/privacy). `--dry-run` measures without sending. The last upload is saved to `~/.gotcapped/outbox/last.json`.
 
 What the tracker **reads** (allow-listed fields only):
 - Claude Code log lines: `timestamp`, `requestId`, `message.id`, `message.model`, `message.usage.*`. Message content is never read into the tracker's data.
 - Codex rollouts: `token_count` events, the model name from `turn_context`, the session id from `session_meta` (only to build a hash), and `rate_limits`.
 - Account identity: `~/.claude.json` → `oauthAccount.accountUuid` / `organizationUuid` / plan tier; `~/.codex/auth.json` → `account_id` and the plan type claim. Tokens and secrets in those files are never used or sent.
 
-What it **sends**, per account and reset window: vendor, plan, a hashed account key, seat type, window kind and reset time (rounded to 15 min), bar % with the time it was read, the window's start and end, tokens per model (input / output / cache read / cache write, plus `lc`: how many requests crossed the model's long-context price threshold), one-way 16-character hashes of request IDs so the same logs aren't counted twice, and `proof` (the SHA-256 of your device secret, used to verify deletion).
+What it **sends**, per reset window: vendor, plan, a hashed account key, seat type, window kind and reset time (rounded to 15 min), bar % with the time it was read, the window's start and end, tokens per model (input / output / cache read / cache write, plus `lc`: how many requests crossed the model's long-context price threshold), one-way 16-character hashes of request IDs so the same logs aren't counted twice, and `proof` (the SHA-256 of your device secret, used to verify deletion).
 
 What it **never sends**: prompts, responses, code, file or project paths, session IDs, git branches, emails, names, raw account or org IDs, or raw request IDs. A test fails the build if any other key or any of those strings reaches the payload.
 
@@ -58,9 +58,9 @@ What it **never sends**: prompts, responses, code, file or project paths, sessio
 
 **Server side.** IPs are used only for rate limiting and stored only as salted hashes. Plan pages show aggregates only, and medians appear at 5+ readings.
 
-## Several accounts? (switching when one caps)
+## Which login is read
 
-$ per bar is computed **per account and per window, never summed across accounts**. The tracker keeps a local timeline of which account was active in each config dir. It samples on every status-line refresh, every run, and every minute in `--watch`. Each token entry goes to the account active at that moment. Entries near a switch (±60 s), or between samples of two different accounts, are dropped. A window where over 10% of tokens are ambiguous doesn't count. History from before the tracker first ran is marked `inferred` and counts at 0.7 weight, and only when that dir has only ever shown one account.
+Claude: the login of the `claude` command-line tool, from `~/.claude.json` (or `$CLAUDE_CONFIG_DIR`). Codex: `~/.codex/auth.json`. Nothing else. The Claude desktop app signs in separately and doesn't leave a readable plan or usage bar, so its usage is not measured, and its sessions are left out rather than counted against the CLI login. If you sign in to a different account, tokens near the change (±60 s) and from before it are not counted for the new login.
 
 ## How the number is computed
 

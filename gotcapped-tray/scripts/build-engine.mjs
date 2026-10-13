@@ -1,8 +1,14 @@
 // Build the engine sidecar: bundle the shared CLI engine with esbuild, then wrap it in a Node single-executable (SEA)
 // named the way Tauri's externalBin expects: src-tauri/binaries/gc-engine-<rust target triple>[.exe].
 import { execSync } from "child_process";
-import { copyFileSync, writeFileSync, chmodSync, mkdirSync } from "fs";
+import { copyFileSync, writeFileSync, chmodSync, mkdirSync, readFileSync } from "fs";
 const sh = (c) => execSync(c, { stdio: "inherit" });
+// SEA needs a Node binary that carries the NODE_SEA fuse. Homebrew's node (shared libnode) does not: set SEA_NODE to an
+// official nodejs.org build, e.g. SEA_NODE=/path/to/node-v22.x-darwin-arm64/bin/node.
+const seaNode = process.env.SEA_NODE || process.execPath;
+if (!readFileSync(seaNode).includes("NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2")) {
+  console.error(`\n${seaNode} has no NODE_SEA fuse (Homebrew node?). Download the official build from nodejs.org and set SEA_NODE=/path/to/node.\n`); process.exit(1);
+}
 const triple = process.env.TARGET_TRIPLE || execSync("rustc -vV").toString().match(/host: (\S+)/)[1];
 const win = process.platform === "win32", mac = process.platform === "darwin";
 sh("npx esbuild engine/engine.ts --bundle --platform=node --target=node20 --outfile=engine/dist/engine.cjs");

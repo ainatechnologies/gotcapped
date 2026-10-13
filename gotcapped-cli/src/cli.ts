@@ -4,7 +4,7 @@ import { createInterface } from "readline";
 import { join } from "path";
 import { existsSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { VERSION, home, ensureDir, loadState, saveState, sample, appendLine, userHome, type State } from "./util";
-import { claudeDirs, claudeAccount, scanClaude, loadBars, barsFromStatusline, type Bar, type Entry } from "./claude";
+import { claudeDirs, claudeAccount, scanClaude, loadBars, barsFromStatusline, claudeSessionOwners, type Bar, type Entry } from "./claude";
 import { codexHome, codexAccount, scanCodex, codexRpcLimits, barsFromRateLimits, codexInstalled, CODEX_PLAN } from "./codex";
 import { buildReading, latestBars, previewOf, WINDOW_MS, type Local } from "./build";
 import { attributor } from "./attrib";
@@ -71,16 +71,21 @@ async function askBar(s: State, o: Opts, vendor: "claude" | "codex", account: st
 async function collect(s: State, o: Opts): Promise<{ locals: Local[]; skipped: string[] }> {
   const now = Date.now(), since = now - 8 * 864e5, locals: Local[] = [], skipped: string[] = [];
   // Claude Code
+  const owners = claudeSessionOwners();
   for (const dir of claudeDirs()) {
-    const acc = claudeAccount(dir); sample(s, "claude", dir, acc.account, now);
+    const cli = claudeAccount(dir); sample(s, "claude", dir, cli.account, now);
     const entries = scanClaude(dir, since);
+    // Only the CLI login in ~/.claude.json is measured. Claude desktop app sessions (a separate sign-in with no readable
+    // plan or bar) are excluded via `owners` so their tokens never count against this login.
+    for (const acc of [cli]) {
     if (!acc.account) { skipped.push(`Claude Code (${dir}): not signed in to a subscription, skipped.`); continue; }
     const plan = await choosePlan(s, o, "claude", acc.account, acc.plan);
     if (!plan) { skipped.push(`Claude Code account ${acc.account.slice(0, 8)}${acc.seat ? ` (${acc.seat})` : ""}: no public plan page for this seat yet, kept local.`); continue; }
     let bars = latestBars(loadBars(barsFile()).filter((b) => b.dir === dir), now).filter((b) => b.account === acc.account);
     if (!bars.some((b) => b.kind === "weekly")) bars = [...bars, ...latestBars(await askBar(s, o, "claude", acc.account, dir), now)];
     if (!bars.length) skipped.push(`Claude Code account ${acc.account.slice(0, 8)}: no bar reading. Run \`gotcapped install-hook\` (automatic) or run again to enter it.`);
-    for (const b of bars) locals.push(buildReading({ vendor: "claude", plan, seat: acc.seat, bar: b, entries, timeline: s.timeline }));
+    for (const b of bars) locals.push(buildReading({ vendor: "claude", plan, seat: acc.seat, bar: b, entries, timeline: s.timeline, owners }));
+    }
   }
   // Codex
   if (codexInstalled()) {
@@ -107,7 +112,7 @@ async function collect(s: State, o: Opts): Promise<{ locals: Local[]; skipped: s
 }
 
 function summary(locals: Local[], skipped: string[]) {
-  console.log(`\nGot Capped tracker ${VERSION}: your numbers, computed on this machine\n`);
+  console.log(`\nCapped tracker ${VERSION}: your numbers, computed on this machine\n`);
   for (const l of locals) {
     const r = l.reading, win = r.kind === "weekly" ? "this week" : "this 5-hour session";
     console.log(`  ${PLAN_NAMES[r.plan] ?? r.plan} · account ${r.account.slice(0, 8)} · ${win}`);
@@ -141,11 +146,7 @@ async function once(o: Opts, auto = false) {
     console.log(`\nFull payload saved to ${join(home(), "outbox", "last.json")}`);
   }
   if (o.dryRun) { console.log("\nDry run: nothing sent."); return; }
-  if (!auto && !o.yes) {
-    if (!interactive()) { console.log("\nNot sent. Re-run with --yes to share, or in a terminal to confirm."); return; }
-    const a = (await ask(`\nShare these numbers with ${new URL(o.endpoint).host} to build the public medians? [y/N] `)).toLowerCase();
-    if (a !== "y" && a !== "yes") { console.log("Not sent."); return; }
-  }
+  if (!auto) console.log(`\nSending numbers only. What we collect and why: https://www.gotcapped.com/privacy (questions: hello@gotcapped.com). Use --dry-run to measure without sending.`);
   const r = await send(o.endpoint, payload);
   for (const c of r.crowd ?? []) console.log(`Sent ${PLAN_NAMES[c.plan] ?? c.plan} (${c.kind}): ${c.valid ? "counts toward the median" : `stored, not counted yet (${(c.flags || []).join(", ") || "see methodology"})`}. ${c.median != null ? `Crowd median ${money(c.median)} per full bar (n=${c.n}).` : `${c.need} more reports until this week's median shows.`}`);
   for (const x of r.results ?? []) if (x.status === "duplicate") console.log(`Skipped a duplicate of another device's logs for account ${x.account}.`);
@@ -153,13 +154,8 @@ async function once(o: Opts, auto = false) {
 
 async function watch(o: Opts) {
   const s = loadState();
-  if (!o.dryRun && !o.yes && !s.autoSend) {
-    await once(o);
-    if (!interactive()) { console.log("Watch mode needs --yes (or a one-time yes in a terminal) to send hourly."); return; }
-    const a = (await ask("\nKeep sending these numbers automatically every hour? [y/N] ")).toLowerCase();
-    if (a !== "y" && a !== "yes") { closeRl(); console.log("OK, watch mode not started."); return; }
-    const s2 = loadState(); s2.autoSend = true; saveState(s2);
-  } else await once({ ...o, yes: true });
+  if (!o.dryRun && !s.autoSend) { s.autoSend = true; saveState(s); }
+  await once({ ...o, yes: true });
   closeRl();
   console.log(`Watching. Sending hourly to ${o.endpoint}. Ctrl+C to stop. Turn off with \`gotcapped pause\`.`);
   // Sample which account is active every minute so switches are caught (§17.2).
@@ -172,8 +168,9 @@ async function hookStatusline(then?: string) {
   const chunks: Buffer[] = []; for await (const c of process.stdin) chunks.push(c as Buffer);
   const raw = Buffer.concat(chunks).toString("utf8"); let input: any = {}; try { input = JSON.parse(raw); } catch {}
   const dir = process.env.CLAUDE_CONFIG_DIR?.split(",")[0] || claudeDirs()[0] || join(userHome(), ".claude");
-  const acc = claudeAccount(dir).account;
-  const s = loadState(); sample(s, "claude", dir, acc); saveState(s);
+  // A status line from a Claude desktop app session belongs to the app's sign-in, not to the CLI login in ~/.claude.json.
+  const own = claudeSessionOwners().get(String(input?.session_id ?? "")), acc = own ?? claudeAccount(dir).account;
+  if (!own) { const s = loadState(); sample(s, "claude", dir, acc); saveState(s); }
   const bars = barsFromStatusline(input, acc, dir);
   const prev = latestBars(loadBars(barsFile()).filter((b) => b.account === acc), Date.now());
   for (const b of bars) { const p = prev.find((x) => x.kind === b.kind && Math.abs(x.reset - b.reset) < 6e4); if (!p || p.pct !== b.pct || b.t - p.t > 10 * 6e4) appendLine(barsFile(), b); }
@@ -202,14 +199,41 @@ const HELP = `gotcapped ${VERSION}: how much API value does your AI plan's bar a
 Usage:
   npx gotcapped                 measure, show what would be sent, ask before sending
   npx gotcapped --dry-run       measure and preview only
-  npx gotcapped --watch         re-send hourly (asks once; --yes to skip)
+  npx gotcapped --watch         re-send hourly
   npx gotcapped install-hook    add the Claude Code status-line hook (automatic bar %)
   npx gotcapped pause           stop automatic sending
   npx gotcapped forget          delete this device's readings on the server, then ~/.gotcapped (--local-only to skip the server)
 
 Options: --yes  --json  --full (show every request hash)  --no-prompt
          --plan claude=claude-max-20x,codex=chatgpt-pro-200  --endpoint URL
-Privacy: https://www.gotcapped.com (README, "Privacy"). Source: MIT.`;
+Privacy: https://www.gotcapped.com/privacy · hello@gotcapped.com. Source: MIT.`;
+
+// One-time first-run notice (consent wording v1). Bump CONSENT_VERSION when the text changes.
+export const CONSENT_VERSION = 1;
+const CONSENT_TEXT = `Capped shares anonymous usage numbers to build public, crowd-measured plan stats.
+
+It reads only token counts and usage-bar % from your local Claude Code and Codex logs,
+and sends: plan, reset window, bar %, tokens per model, app version, a random device ID
+and hashed account keys. Never your prompts, code, file names, email or raw IP.
+
+Run by AINA Technologies LLC (US). Data may be stored outside your country, kept up to
+13 months, and published only as aggregates. You can delete it any time with
+\`npx gotcapped forget\`. Details: gotcapped.com/privacy · hello@gotcapped.com
+`;
+const consentFile = () => join(home(), "consent.json");
+const hasConsent = () => { try { return JSON.parse(readFileSync(consentFile(), "utf8")).version === CONSENT_VERSION; } catch { return false; } };
+// Returns true when the user has agreed (now or before). `n`/Cancel: nothing is read, stored or sent.
+async function ensureConsent(o: Opts): Promise<boolean> {
+  if (hasConsent()) return true;
+  if (!o.yes) {
+    console.log(CONSENT_TEXT);
+    if (!interactive()) { console.log("Not started. Re-run in a terminal to agree, or pass --yes to agree to the notice above."); return false; }
+    const a = (await ask("Agree and start sharing? [Y = Agree / n = Cancel] ")).trim().toLowerCase();
+    if (a !== "" && a !== "y" && a !== "yes") { console.log("Cancelled. Nothing was read, stored or sent."); return false; }
+  }
+  ensureDir(home()); writeFileSync(consentFile(), JSON.stringify({ version: CONSENT_VERSION, at: new Date().toISOString(), via: o.yes ? "--yes" : "prompt" }), { mode: 0o600 });
+  return true;
+}
 
 export async function main(argv = process.argv.slice(2)) {
   const o = args(argv); const [c, ...rest] = o.cmd;
@@ -217,7 +241,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (c === "help") console.log(HELP);
     else if (c === "version") console.log(VERSION);
     else if (c === "hook" && rest[0] === "statusline") { const i = argv.indexOf("--then"); await hookStatusline(i >= 0 ? argv[i + 1] : undefined); }
-    else if (c === "install-hook") await installHook(o);
+    else if (c === "install-hook") { if (await ensureConsent(o)) await installHook(o); }
     else if (c === "pause") { const s = loadState(); s.autoSend = false; saveState(s); console.log("Automatic sending paused."); }
     else if (c === "forget") {
       // Server first (it needs this device's secret), then local. A failed server call is reported, never hidden.
@@ -231,6 +255,7 @@ export async function main(argv = process.argv.slice(2)) {
       rmSync(home(), { recursive: true, force: true }); console.log(`Deleted ${home()}.`);
     }
     else if (c) { console.log(HELP); process.exitCode = 2; }
+    else if (!(await ensureConsent(o))) { process.exitCode = 1; }
     else if (o.watch) { await watch(o); return; }
     else await once(o);
   } catch (e: any) { console.error(`gotcapped: ${e.message}`); process.exitCode = 1; }

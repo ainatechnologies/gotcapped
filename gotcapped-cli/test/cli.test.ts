@@ -20,7 +20,7 @@ test("claude parser: usage fields only, 1h cache split, dedupe, synthetic skippe
   copyFileSync(join(FX, "claude-session.jsonl"), join(d, "projects", "p", "s.jsonl"));
   const es = scanClaude(d, 0);
   assert.equal(es.length, 2);
-  assert.deepEqual({ ...es[0], req: undefined, t: undefined }, { t: undefined, req: undefined, m: "claude-opus-5", in: 10, out: 2000, cr: 100000, cw: 0, cw1h: 20000 });
+  assert.deepEqual({ ...es[0], req: undefined, t: undefined }, { t: undefined, req: undefined, m: "claude-opus-5", in: 10, out: 2000, cr: 100000, cw: 0, cw1h: 20000, s: "s" });
   assert.equal(es[1].cw, 4000); assert.equal(es[1].cw1h, 0);
   assert.match(es[0].req, /^[0-9a-f]{16}$/);
   assert.equal(parseClaudeLine('{"type":"user","message":{"content":"x"}}'), null);
@@ -47,7 +47,7 @@ test("codex rollout: token deltas, cached split out of input, rate limits read",
   assert.equal(barsFromRateLimits({ primary: { usedPercent: 0, windowDurationMins: 43200, resetsAt: 1 } }, 5, "a", "/c", "rpc").length, 0); // monthly free-tier window: not a plan we track
 });
 
-test("multi-account: tokens go to the account active at that time; ±60 s of a switch is dropped", () => {
+test("sign-in change: tokens go to the account active at that time; ±60 s of a switch is dropped", () => {
   const tl = [
     { t: T("2026-10-12T08:00:00Z"), vendor: "claude", dir: "/d", account: ACC_A },
     { t: T("2026-10-12T10:00:00Z"), vendor: "claude", dir: "/d", account: ACC_A },
@@ -115,7 +115,7 @@ test("end to end (fixtures): hook records the bar, dry run builds a payload, not
   delete (env as any).CLAUDE_CONFIG_DIR;
   const hook = spawnSync(process.execPath, [cli, "hook", "statusline"], { env, input: JSON.stringify({ model: { display_name: "Opus" }, rate_limits: { seven_day: { used_percentage: 20, resets_at: Math.floor((now + 3 * 864e5) / 1000) } } }), encoding: "utf8" });
   assert.match(hook.stdout, /week 20%/);
-  const run = spawnSync(process.execPath, [cli, "--dry-run", "--no-prompt"], { env, encoding: "utf8" });
+  const run = spawnSync(process.execPath, [cli, "--dry-run", "--no-prompt", "--yes"], { env, encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
   assert.match(run.stdout, /Claude Max 20x gave \$/); assert.match(run.stdout, /Dry run: nothing sent/);
   const p = JSON.parse(readFileSync(join(h, ".gotcapped", "outbox", "last.json"), "utf8"));
@@ -161,4 +161,24 @@ test("long-context: only requests above the model's threshold are counted (lc), 
   const r2 = buildReading({ vendor: "codex", plan: "chatgpt-pro-200", bar: { t: now, account: ACC_A, dir: "/c", kind: "weekly", pct: 30, reset: now + 3 * 864e5, source: "rpc" },
     entries: [mk(now - 36e5, 100000, "r1")], timeline: [{ t: now - 5 * 864e5, vendor: "codex", dir: "/c", account: ACC_A }] });
   assert.ok(!("lc" in r2.reading.usage[0]));
+});
+
+test("first run without consent: non-interactive and no --yes reads nothing and exits", () => {
+  const { mkdtempSync, existsSync } = require("fs"); const { tmpdir } = require("os"); const { join } = require("path"); const { spawnSync } = require("child_process");
+  const h = mkdtempSync(join(tmpdir(), "gc-consent-"));
+  const cli = join(__dirname, "..", "src", "cli.js");
+  const r = spawnSync(process.execPath, [cli, "--dry-run"], { env: { ...process.env, HOME: h, GOTCAPPED_HOME: join(h, ".gotcapped") }, encoding: "utf8" });
+  assert.match(r.stdout, /Agree|--yes/); assert.equal(existsSync(join(h, ".gotcapped", "state.json")), false); assert.equal(existsSync(join(h, ".gotcapped", "consent.json")), false);
+});
+
+test("Claude desktop app sessions belong to the app's sign-in, not the CLI login", async () => {
+  const { claudeDesktopAccounts, claudeSessionOwners } = await import("../src/claude");
+  const { accountKey } = await import("../src/util");
+  const app = mkdtempSync(join(tmpdir(), "gc-app-")), d = join(app, "claude-code-sessions", "acct-team", "org-team"); mkdirSync(d, { recursive: true });
+  writeFileSync(join(d, "local_1.json"), JSON.stringify({ sessionId: "x", cliSessionId: "sess-team", title: "CANARY_TITLE", lastActivityAt: 5 }));
+  process.env.GOTCAPPED_CLAUDE_APP_DIR = app;
+  const acc = claudeDesktopAccounts(); assert.equal(acc.length, 1); assert.equal(acc[0].account, accountKey("claude", "acct-team", "org-team"));
+  assert.deepEqual(acc[0].sessions, ["sess-team"]); assert.ok(!JSON.stringify(acc).includes("CANARY"));
+  assert.equal(claudeSessionOwners().get("sess-team"), acc[0].account);
+  delete process.env.GOTCAPPED_CLAUDE_APP_DIR;
 });

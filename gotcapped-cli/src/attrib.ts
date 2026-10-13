@@ -1,4 +1,4 @@
-// §17 multi-account attribution. Every token entry is attributed to the account that was active in its config dir at
+// §17 sign-in-change attribution. Every token entry is attributed to the account that was active in its config dir at
 // that moment, using the local timeline of samples (statusline hook, every CLI run, every minute in --watch).
 import type { Sample } from "./util";
 export type Attr = { account: string | null; how: "observed" | "inferred" | "ambiguous" };

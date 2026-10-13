@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
-  "description": "Got Capped tray app: how much API value your AI plan's bar actually buys. Numbers only, opt-in.",
+  "description": "Capped tray app: how much API value your AI plan's bar actually buys. Numbers only, opt-in.",
   "scripts": {
     "engine:bundle": "esbuild engine/engine.ts --bundle --platform=node --target=node20 --outfile=engine/dist/engine.cjs",
     "engine:bin": "node scripts/build-engine.mjs",

@@ -12,7 +12,7 @@
 import { join } from "path";
 import { readFileSync, writeFileSync, existsSync, rmSync } from "fs";
 import { VERSION, home, ensureDir, loadState, saveState, sample, appendLine, userHome, type State } from "../../gotcapped-cli/src/util";
-import { claudeDirs, claudeAccount, scanClaude, loadBars, barsFromStatusline } from "../../gotcapped-cli/src/claude";
+import { claudeDirs, claudeAccount, scanClaude, loadBars, barsFromStatusline, claudeDesktopAccounts, claudeSessionOwners } from "../../gotcapped-cli/src/claude";
 import { codexHome, codexAccount, scanCodex, codexRpcLimits, barsFromRateLimits, codexInstalled, CODEX_PLAN } from "../../gotcapped-cli/src/codex";
 import { buildReading, latestBars, previewOf, type Local } from "../../gotcapped-cli/src/build";
 import { attributor } from "../../gotcapped-cli/src/attrib";
@@ -25,60 +25,75 @@ export const ENGINE_VERSION = `tray-0.1.0+cli-${VERSION}`;
 const ENDPOINT = process.env.GOTCAPPED_ENDPOINT || "https://www.gotcapped.com/api/ingest";
 const barsFile = () => join(home(), "bars.jsonl");
 const crowdFile = () => join(home(), "tray-crowd.json");
-export const PLAN_NAMES: Record<string, string> = { "claude-pro": "Claude Pro", "claude-max-5x": "Claude Max 5x", "claude-max-20x": "Claude Max 20x", "chatgpt-plus": "ChatGPT Plus", "chatgpt-pro-100": "ChatGPT Pro $100", "chatgpt-pro-200": "ChatGPT Pro $200" };
+export const PLAN_NAMES: Record<string, string> = { "claude-pro": "Claude Pro", "claude-max-5x": "Claude Max 5x", "claude-max-20x": "Claude Max 20x", "chatgpt-plus": "ChatGPT Plus", "chatgpt-pro-100": "ChatGPT Pro $100", "chatgpt-pro-200": "ChatGPT Pro $200", "claude-team-standard": "Claude Team Standard", "claude-team-premium": "Claude Team Premium" };
+export const LOCAL_ONLY = /^claude-team-/;
 export const PLAN_PRICE: Record<string, number> = { "claude-pro": 20, "claude-max-5x": 100, "claude-max-20x": 200, "chatgpt-plus": 20, "chatgpt-pro-100": 100, "chatgpt-pro-200": 200 };
 
-export type Account = { vendor: "claude" | "codex"; account: string; short: string; dir: string; plan: string | null; planName: string | null; seat?: string; tool: string; signedIn: boolean };
-export type View = { vendor: string; account: string; plan: string; planName: string; kind: "5h" | "weekly"; pct: number; source: string; resetAt: string; usd: number; perBar: number | null; tokens: number; note?: string; attribution: string; crowd?: { median: number | null; n: number; need: number; early?: boolean; prevMedian?: number | null; prevN?: number } | null; planPrice?: number };
+export type Account = { vendor: "claude" | "codex"; account: string; short: string; dir: string; plan: string | null; planName: string | null; seat?: string; tool: string; login: string; signedIn: boolean };
+export type View = { vendor: string; account: string; plan: string; planName: string; kind: "5h" | "weekly"; pct: number; source: string; resetAt: string; usd: number; perBar: number | null; tokens: number; tk?: { in: number; out: number; cr: number; cw: number }; note?: string; attribution: string; crowd?: { median: number | null; n: number; need: number; early?: boolean; prevMedian?: number | null; prevN?: number } | null; planPrice?: number };
 
-function collect(s: State) {
-  const now = Date.now(), since = now - 8 * 864e5, locals: Local[] = [], skipped: string[] = [], accounts: Account[] = [];
-  for (const dir of claudeDirs()) {
-    const acc = claudeAccount(dir); sample(s, "claude", dir, acc.account, now);
+type Opt = { quick?: boolean; accountsOnly?: boolean };
+// quick: only the current 5-hour window (newest files, cache read-only) so the popover gets a first number in seconds.
+const kinds = (o: Opt) => (o.quick ? ["5h"] : ["5h", "weekly"]);
+function collect(s: State, o: Opt = {}) {
+  const now = Date.now(), since = now - (o.quick ? 5 * 36e5 + 6e4 : 8 * 864e5), locals: Local[] = [], skipped: string[] = [], accounts: Account[] = [];
+  const owners = claudeSessionOwners(), desk = claudeDesktopAccounts(); let appSessions = 0;
+  for (const [i, dir] of claudeDirs().entries()) {
+    const cli = claudeAccount(dir); sample(s, "claude", dir, cli.account, now);
+    // Only the `claude` CLI login in ~/.claude.json is measured. The Claude desktop app signs in separately and leaves no
+    // readable plan or usage bar, so its sessions are excluded (via `owners`) instead of being counted against this login.
+    const list = [{ ...cli, tool: "Claude Code" }];
+    if (i === 0) appSessions = desk.filter((d) => d.account !== cli.account).reduce((a, d) => a + d.sessions.length, 0);
+    let entries: ReturnType<typeof scanClaude> | null = null;
+    for (const acc of list) {
     if (!acc.account) { skipped.push("Claude Code: found, but not signed in to a subscription."); continue; }
     const plan = s.plans[acc.account] ?? acc.plan ?? null; if (plan && !s.plans[acc.account]) s.plans[acc.account] = plan;
-    accounts.push({ vendor: "claude", account: acc.account, short: acc.account.slice(0, 8), dir, plan, planName: plan ? PLAN_NAMES[plan] ?? plan : null, seat: acc.seat, tool: "Claude Code", signedIn: true });
-    if (!plan) { skipped.push(`Claude Code ${acc.account.slice(0, 8)}${acc.seat ? ` (${acc.seat})` : ""}: pick a plan to measure it. Team seats stay on this device for now.`); continue; }
-    const entries = scanClaude(dir, since);
-    const bars = latestBars(loadBars(barsFile()).filter((b) => b.dir === dir), now).filter((b) => b.account === acc.account);
-    if (!bars.length) skipped.push(`Claude Code ${acc.account.slice(0, 8)}: no bar % yet. Turn on the Claude Code status line hook in Settings.`);
-    for (const b of bars) locals.push(buildReading({ vendor: "claude", plan, seat: acc.seat, bar: b, entries, timeline: s.timeline }));
+    accounts.push({ vendor: "claude", account: acc.account, short: acc.account.slice(0, 8), dir, plan, planName: plan ? PLAN_NAMES[plan] ?? plan : null, seat: acc.seat, tool: acc.tool, login: process.env.CLAUDE_CONFIG_DIR ? `claude CLI login (${dir}/.claude.json)` : "claude CLI login (~/.claude.json)", signedIn: true });
+    if (!plan) { skipped.push(`${acc.tool} ${acc.account.slice(0, 8)}${acc.seat ? ` (detected: ${acc.seat.replace(/_/g, " ")})` : ""}: confirm your plan to measure it.`); continue; }
+    if (o.accountsOnly) continue;
+    entries ??= scanClaude(dir, since, { save: !o.quick });
+    const bars = latestBars(loadBars(barsFile()).filter((b) => b.dir === dir), now).filter((b) => b.account === acc.account && kinds(o).includes(b.kind));
+    if (!bars.length) skipped.push(`${acc.tool} ${acc.account.slice(0, 8)}: no bar % yet. Turn on the Claude Code status line hook in Settings.`);
+    for (const b of bars) locals.push(buildReading({ vendor: "claude", plan, seat: acc.seat, bar: b, entries, timeline: s.timeline, owners }));
+    }
   }
-  return { now, locals, skipped, accounts };
+  return { now, locals, skipped, accounts, appSessions };
 }
 
-async function collectCodex(s: State, out: ReturnType<typeof collect>) {
+async function collectCodex(s: State, out: ReturnType<typeof collect>, o: Opt = {}) {
   if (!codexInstalled()) return;
   const dir = codexHome(), acc = codexAccount(dir); sample(s, "codex", dir, acc.account, out.now);
   if (!acc.account) { out.skipped.push("Codex: found, but not signed in with ChatGPT."); return; }
-  const rpc = process.env.GOTCAPPED_NO_RPC ? null : await codexRpcLimits(8000);
+  const rpc = process.env.GOTCAPPED_NO_RPC || o.accountsOnly ? null : await codexRpcLimits(8000);
   const planType = rpc?.planType || acc.planType;
   const plan = s.plans[acc.account] ?? (planType ? CODEX_PLAN[planType] : undefined) ?? null; if (plan && !s.plans[acc.account]) s.plans[acc.account] = plan;
-  out.accounts.push({ vendor: "codex", account: acc.account, short: acc.account.slice(0, 8), dir, plan, planName: plan ? PLAN_NAMES[plan] ?? plan : null, seat: acc.seat, tool: "Codex", signedIn: true });
+  out.accounts.push({ vendor: "codex", account: acc.account, short: acc.account.slice(0, 8), dir, plan, planName: plan ? PLAN_NAMES[plan] ?? plan : null, seat: acc.seat, tool: "Codex", login: "Codex login (~/.codex/auth.json)", signedIn: true });
   if (!plan) { out.skipped.push(`Codex ${acc.account.slice(0, 8)} (${planType ?? "unknown plan"}): pick a plan to measure it.`); return; }
-  const scan = scanCodex(dir, out.now - 8 * 864e5), who = attributor(s.timeline, "codex", dir);
+  if (o.accountsOnly) return;
+  const scan = scanCodex(dir, out.now - (o.quick ? 5 * 36e5 + 6e4 : 8 * 864e5), { save: !o.quick }), who = attributor(s.timeline, "codex", dir);
   const fromLogs = scan.bars.map((b) => ({ ...b, dir, account: who(b.t).how === "ambiguous" ? null : who(b.t).account }));
   const fromRpc = rpc ? barsFromRateLimits(rpc.rateLimits, out.now, acc.account, dir, "rpc") : [];
-  const bars = latestBars([...fromLogs, ...fromRpc], out.now).filter((b) => b.account === acc.account);
+  const bars = latestBars([...fromLogs, ...fromRpc], out.now).filter((b) => b.account === acc.account && kinds(o).includes(b.kind));
   if (!bars.length) out.skipped.push(`Codex ${acc.account.slice(0, 8)}: no bar % yet (Codex reports it after your next prompt).`);
   for (const b of bars) out.locals.push(buildReading({ vendor: "codex", plan, seat: acc.seat, bar: b, entries: scan.entries, timeline: s.timeline }));
 }
 
 const readCrowd = (): Record<string, any> => { try { return JSON.parse(readFileSync(crowdFile(), "utf8")); } catch { return {}; } };
 
-export async function scan() {
+export async function scan(o: Opt = {}) {
   const s = loadState();
-  const out = collect(s); await collectCodex(s, out); saveState(s);
+  const out = collect(s, o); await collectCodex(s, out, o); saveState(s);
   const crowd = readCrowd();
   const views: View[] = out.locals.map((l) => ({
     vendor: l.reading.vendor, account: l.reading.account, plan: l.reading.plan, planName: PLAN_NAMES[l.reading.plan] ?? l.reading.plan, kind: l.reading.kind,
     pct: l.reading.bar.pct, source: l.reading.bar.source, resetAt: l.reading.reset_at, usd: l.usd, perBar: l.perBar, tokens: l.tokens, note: l.note,
+    tk: l.reading.usage.reduce((a, u: any) => ({ in: a.in + u.in, out: a.out + u.out, cr: a.cr + u.cr, cw: a.cw + u.cw + (u.cw1h ?? 0) }), { in: 0, out: 0, cr: 0, cw: 0 }),
     attribution: l.reading.attribution, crowd: crowd[`${l.reading.plan}|${l.reading.kind}`] ?? null, planPrice: PLAN_PRICE[l.reading.plan],
   }));
-  const sendable = out.locals.filter((l) => l.reading.usage.length);
+  const sendable = out.locals.filter((l) => l.reading.usage.length && !LOCAL_ONLY.test(l.reading.plan)); // Team seats: measured locally, never sent (yet)
   const payload = { v: 1 as const, client: VERSION, device: s.device, proof: proofOf(s.secret), readings: sendable.map((l) => l.reading) };
-  ensureDir(join(home(), "outbox")); writeFileSync(join(home(), "outbox", "last.json"), JSON.stringify(payload, null, 2), { mode: 0o600 });
-  return { ok: true, engine: ENGINE_VERSION, at: new Date(out.now).toISOString(), device: s.device.slice(0, 8), accounts: out.accounts, readings: views, skipped: out.skipped, payload, preview: previewOf(payload), hookInstalled: hookInstalled() };
+  if (!o.quick && !o.accountsOnly) { ensureDir(join(home(), "outbox")); writeFileSync(join(home(), "outbox", "last.json"), JSON.stringify(payload, null, 2), { mode: 0o600 }); }
+  return { ok: true, phase: o.accountsOnly ? "accounts" : o.quick ? "quick" : "full", engine: ENGINE_VERSION, at: new Date(out.now).toISOString(), device: s.device.slice(0, 8), accounts: out.accounts, appSessions: out.appSessions, readings: views, skipped: out.skipped, payload, preview: previewOf(payload), hookInstalled: hookInstalled() };
 }
 
 function hookInstalled() { for (const d of [...claudeDirs(), join(process.env.HOME || "", ".claude")]) { try { const c = JSON.parse(readFileSync(join(d, "settings.json"), "utf8")); if (String(c?.statusLine?.command || "").includes("gotcapped") || String(c?.statusLine?.command || "").includes("gc-engine")) return true; } catch {} } return false; }
@@ -134,7 +149,9 @@ async function hookStatusline(then?: string) {
   const chunks: Buffer[] = []; for await (const c of process.stdin) chunks.push(c as Buffer);
   const raw = Buffer.concat(chunks).toString("utf8"); let input: any = {}; try { input = JSON.parse(raw); } catch {}
   const dir = process.env.CLAUDE_CONFIG_DIR?.split(",")[0] || claudeDirs()[0] || join(userHome(), ".claude");
-  const acc = claudeAccount(dir).account; const s = loadState(); sample(s, "claude", dir, acc); saveState(s);
+  // A status line from a Claude desktop app session belongs to the app's sign-in, not to the CLI login in ~/.claude.json.
+  const own = claudeSessionOwners().get(String(input?.session_id ?? "")), acc = own ?? claudeAccount(dir).account;
+  if (!own) { const s = loadState(); sample(s, "claude", dir, acc); saveState(s); }
   const bars = barsFromStatusline(input, acc, dir), prev = latestBars(loadBars(barsFile()).filter((b) => b.account === acc), Date.now());
   for (const b of bars) { const p = prev.find((x) => x.kind === b.kind && Math.abs(x.reset - b.reset) < 6e4); if (!p || p.pct !== b.pct || b.t - p.t > 10 * 6e4) appendLine(barsFile(), b); }
   if (then) { const { spawnSync } = await import("child_process"); const r = spawnSync(then, { shell: true, input: raw, encoding: "utf8" }); process.stdout.write(r.stdout || ""); return true; }
@@ -158,7 +175,7 @@ async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   let r: any;
   try {
-    if (cmd === "scan") r = { ...(await scan()), cursor: cursorLast() };
+    if (cmd === "scan") r = { ...(await scan({ quick: rest.includes("--quick"), accountsOnly: rest.includes("--accounts") })), cursor: cursorLast() };
     else if (cmd === "sample") r = sampleOnly();
     else if (cmd === "send") r = await send();
     else if (cmd === "cursor") r = cursorCsv(rest[0]);

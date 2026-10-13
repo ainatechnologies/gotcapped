@@ -1,6 +1,6 @@
-# Got Capped
+# Capped
 
-**See what your AI subscription actually gives you.** Got Capped reads the usage logs your AI tools already write on your machine. It prices every request at API list prices and shows you the **API-equivalent dollars per full usage bar**, week by week.
+**See what your AI subscription actually gives you.** Capped reads the usage logs your AI tools already write on your machine. It prices every request at API list prices and shows you the **API-equivalent dollars per full usage bar**, week by week.
 
 - **Menu bar app** (macOS first; Windows and Linux to follow). Results appear right after the first history scan.
 - **CLI:** `npx gotcapped`

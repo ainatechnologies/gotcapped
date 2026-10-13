@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Got Capped",
+  "productName": "Capped",
   "version": "0.1.0",
   "identifier": "com.gotcapped.tray",
   "build": {
@@ -11,24 +11,32 @@
     "windows": [
       {
         "label": "main",
-        "title": "Got Capped",
+        "title": "Capped",
         "url": "index.html",
-        "width": 380,
-        "height": 600,
+        "width": 300,
+        "height": 440,
         "resizable": false,
         "decorations": false,
-        "transparent": false,
+        "transparent": true,
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "visible": false,
         "focus": true,
         "shadow": true,
-        "dragDropEnabled": true
+        "dragDropEnabled": true,
+        "windowEffects": {
+          "effects": [
+            "menu"
+          ],
+          "state": "active",
+          "radius": 10
+        }
       }
     ],
     "security": {
       "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost"
-    }
+    },
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,

@@ -24,12 +24,15 @@ export function latestBars(bars: Bar[], now = Date.now()) {
   return [...best.values()];
 }
 
-export function buildReading(o: { vendor: "claude" | "codex"; plan: string; seat?: string; bar: Bar; entries: Entry[]; timeline: Sample[] }): Local {
+export function buildReading(o: { vendor: "claude" | "codex"; plan: string; seat?: string; bar: Bar; entries: Entry[]; timeline: Sample[]; owners?: Map<string, string> }): Local {
   const { bar } = o, start = bar.reset - WINDOW_MS[bar.kind], end = bar.t;
   const who = attributor(o.timeline, o.vendor, bar.dir);
   const inWin = o.entries.filter((e) => e.t >= start && e.t <= end);
   let amb = 0, inferred = false; const mine: Entry[] = [];
   for (const e of inWin) {
+    // A session we know the owner of (Claude desktop app) is attributed directly; everything else uses the timeline.
+    const own = e.s ? o.owners?.get(e.s) : undefined;
+    if (own) { if (own === bar.account) mine.push(e); continue; }
     const a = who(e.t);
     if (a.how === "ambiguous") { amb += e.in + e.out + e.cr + e.cw + e.cw1h; continue; }
     if (a.account !== bar.account) continue; // another account's tokens: never divided by this account's bar
@@ -52,7 +55,7 @@ export function buildReading(o: { vendor: "claude" | "codex"; plan: string; seat
     usage, req: [...new Set(mine.map((e) => e.req))].sort(),
   };
   const usd = priceUsage(usage).usd;
-  const note = bar.pct < 10 ? "Bar under 10%: shown here, but too small to count in the public median yet." : reading.ambiguous_share > 0.1 ? "Over 10% of tokens fall near an account switch, so this window won't count." : !usage.length ? "No tokens in this window for this account." : undefined;
+  const note = bar.pct < 10 ? "Bar under 10%: shown here, but too small to count in the public median yet." : reading.ambiguous_share > 0.1 ? "Over 10% of tokens fall near a sign-in change, so this window won't count." : !usage.length ? "No tokens in this window." : undefined;
   return { reading, usd, perBar: bar.pct > 0 && usd > 0 ? usd / (bar.pct / 100) : null, tokens, entries: mine.length, note };
 }
 
