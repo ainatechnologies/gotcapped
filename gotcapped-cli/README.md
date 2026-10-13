@@ -50,7 +50,9 @@ What it **sends**, per reset window: vendor, plan, a hashed account key, seat ty
 
 What it **never sends**: prompts, responses, code, file or project paths, session IDs, git branches, emails, names, raw account or org IDs, or raw request IDs. A test fails the build if any other key or any of those strings reaches the payload.
 
-**Hashing.** Account keys are `HMAC-SHA256("gotcapped-pepper-v1", vendor:accountId:orgId)` computed on your device. The pepper is public on purpose, so the same account hashes the same on your laptop and desktop and the two can be merged instead of counted twice. Account IDs are random UUIDs, so the hash can't be reversed by guessing.
+**Hashing.** On this machine, account keys are HMAC-SHA256 under the public pepper `gotcapped-pepper-v1` over `acct:<vendor>:<accountId>:<orgId>` (32 hex characters). Request ids are the same pepper over `req:<vendor>:<id>`, truncated to 16 hex characters. The pepper is public, and it is the same in every install, so a laptop and a desktop produce the same account key (one account, not two) and the same request hash (a re-upload is not counted twice). It is not a secret. A random account UUID cannot be guessed from the hash, but anyone who already knows the raw account id or request id can recompute the on-device hash and match it.
+
+Those on-device values are correlation tokens. The ingest service must hash them again with a secret that never ships in this client before they are stored, so a database copy cannot be matched back to a known id. Old installs keep sending the tokens above; the server accepts them unchanged. The upload does not gain a field. The contract, the migration, and the privacy-page text to publish once the backfill has run are in [`../gotcapped-tray/docs/INGEST_REKEY.md`](../gotcapped-tray/docs/INGEST_REKEY.md). Reference code: `src/shared/ingest-rekey.ts` (not called from the upload path).
 
 **Device ID.** A random 128-bit ID made on first run (never derived from hardware). Stored in `~/.gotcapped/state.json`.
 

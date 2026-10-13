@@ -3,13 +3,18 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rea
 import { homedir } from "os";
 import { join } from "path";
 
-// Public, versioned pepper. It is in the open-source code on purpose: the same account must hash the same on every
-// device so the server can merge them. Account IDs are random UUIDs, so the hash can't be reversed by guessing.
+// Cross-device correlation pepper. Public on purpose and frozen: every install, including ones already in
+// production, must hash the same account and the same request id to the same bytes so the server can merge
+// devices and de-duplicate logs. It is not a confidentiality key. Anyone who already knows the raw id can
+// recompute this hash. The stored form is a second HMAC under a server-only secret (shared/ingest-rekey.ts);
+// that step is not done on the device, and nothing besides these existing tokens is uploaded.
 export const PEPPER = "gotcapped-pepper-v1";
 export const VERSION = "0.1.0";
+export const accountMaterial = (vendor: string, accountId: string, orgId = "") => `acct:${vendor}:${accountId}:${orgId}`;
+export const reqMaterial = (vendor: string, id: string) => `req:${vendor}:${id}`;
 export const hmac = (s: string, len = 32) => createHmac("sha256", PEPPER).update(s).digest("hex").slice(0, len);
-export const accountKey = (vendor: string, accountId: string, orgId = "") => hmac(`acct:${vendor}:${accountId}:${orgId}`, 32);
-export const reqHash = (vendor: string, id: string) => hmac(`req:${vendor}:${id}`, 16);
+export const accountKey = (vendor: string, accountId: string, orgId = "") => hmac(accountMaterial(vendor, accountId, orgId), 32);
+export const reqHash = (vendor: string, id: string) => hmac(reqMaterial(vendor, id), 16);
 
 export const home = () => process.env.GOTCAPPED_HOME || join(process.env.HOME || homedir(), ".gotcapped");
 export const userHome = () => process.env.HOME || homedir();

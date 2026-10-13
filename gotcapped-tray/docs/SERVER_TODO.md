@@ -8,3 +8,4 @@
    prevMedian, prevN }`. `median` is the live week (may include partials,
    `early` when partials carry >50% weight); `prevMedian` is the last *closed* week (complete + backfill only).
    Plain numbers only: no cut flagging. Engine: `engine crowd`.
+3. **Not done.** Re-hash `readings[].account` and `readings[].req` on ingest with `GOTCAPPED_INGEST_SECRET` before they are stored, and backfill rows already stored under the public pepper. The request body does not change, so old clients keep working and request de-dup keeps matching. Spec, rollout order, and privacy wording: [INGEST_REKEY.md](INGEST_REKEY.md). Reference: `gotcapped-cli/src/shared/ingest-rekey.ts`.
