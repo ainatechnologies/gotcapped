@@ -1,0 +1,91 @@
+# Builds Got Capped for macOS (Apple silicon + Intel, signed + notarized), Windows (unsigned v0) and Linux (AppImage + deb).
+# Creates a DRAFT GitHub release; nothing is public until a human presses Publish.
+# Repo layout expected (monorepo gotcapped/tracker):  gotcapped-cli/  (the shared engine)  +  gotcapped-tray/  (this app)
+name: release
+on:
+  workflow_dispatch:
+  push:
+    tags: ["tray-v*"]
+permissions:
+  contents: write
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci && npm test
+        working-directory: gotcapped-cli
+      - run: npm ci && npm test   # includes the privacy canary test: no content/paths/ids may reach the payload
+        working-directory: gotcapped-tray
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+    runs-on: ${{ matrix.os }}
+    defaults: { run: { working-directory: gotcapped-tray } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }   # official Node build: has the SEA fuse the engine sidecar needs
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - uses: swatinem/rust-cache@v2
+        with: { workspaces: "gotcapped-tray/src-tauri -> target" }
+      - name: Linux deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+      - run: npm ci
+      - name: Build engine sidecar (shared CLI engine as a single executable)
+        run: node scripts/build-engine.mjs
+        env: { TARGET_TRIPLE: "${{ matrix.target }}" }
+      - name: Import Apple Developer ID certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import "$RUNNER_TEMP/cert.p12" -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm "$RUNNER_TEMP/cert.p12"
+          ID=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application" | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          test -n "$ID" || { echo "No 'Developer ID Application' identity in APPLE_CERTIFICATE"; exit 1; }
+          echo "APPLE_SIGNING_IDENTITY=$ID" >> "$GITHUB_ENV"
+      - name: Build, sign, notarize, bundle
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: gotcapped-tray
+          args: --target ${{ matrix.target }}
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('tray-v0.1.0-{0}', github.run_number) }}
+          releaseName: "Got Capped ${{ github.ref_type == 'tag' && github.ref_name || 'dev build' }}"
+          releaseBody: "Draft. Windows build is unsigned in v0: SmartScreen shows 'Windows protected your PC' → More info → Run anyway."
+          releaseDraft: true
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS notarization (notarytool via Tauri). Read from repo secrets only; never echoed.
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Verify macOS signature + notarization
+        if: runner.os == 'macOS'
+        run: |
+          APP=$(find src-tauri/target/${{ matrix.target }}/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -dv --verbose=4 "$APP" 2>&1 | grep -E "Authority=Developer ID Application|flags=.*runtime"
+          spctl --assess --type execute --verbose "$APP"
+          xcrun stapler validate "$APP"

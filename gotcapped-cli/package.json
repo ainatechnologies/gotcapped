@@ -1,0 +1,42 @@
+{
+  "name": "gotcapped",
+  "version": "0.1.0",
+  "description": "Open-source tracker: how much API value your Claude Code / Codex plan's usage bar actually buys. Numbers only, opt-in.",
+  "license": "MIT",
+  "bin": {
+    "gotcapped": "dist/cli.js"
+  },
+  "main": "dist/cli.js",
+  "files": [
+    "dist/**/*.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "homepage": "https://www.gotcapped.com",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "usage",
+    "rate-limits",
+    "ccusage",
+    "ai-plans"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "test": "npm run build && node --test dist-test/test/",
+    "pretest": "rm -rf dist-test && tsc -p tsconfig.test.json",
+    "prepublishOnly": "npm test"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "@types/node": "22.18.6"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ainatechnologies/gotcapped.git",
+    "directory": "gotcapped-cli"
+  }
+}
